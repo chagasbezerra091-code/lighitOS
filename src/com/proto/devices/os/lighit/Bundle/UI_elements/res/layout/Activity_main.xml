@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:lighit="http://schemas.lighit.os/widgets"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:background="#CCCCCC"
+>
+
+    <TextView
+        lighit:id="@+id/text_app_title"
+        lighit:layout_width="wrap_content"
+        lighit:layout_height="wrap_content"
+        lighit:text="Bem-vindo ao LightOS User Shell"
+        lighit:textSize="24sp"
+        lighit:textColor="#000000"
+        lighit:layout_gravity="center_horizontal"
+        lighit:margin_bottom="30dp"
+    />
+
+    <Button
+        lighit:id="@+id/button_start_drivers"
+        lighit:layout_width="match_parent"
+        lighit:layout_height="50dp"
+        lighit:text="Iniciar Subsistema de IPC"
+        lighit:background="#007BFF"
+        lighit:textColor="#FFFFFF"
+        lighit:onClick="onStartIpcClicked"
+    />
+
+    <ScrollView
+        lighit:layout_width="match_parent"
+        lighit:layout_height="0dp"
+        lighit:layout_weight="1"
+        lighit:margin_top="20dp"
+    >
+        <TextView
+            lighit:id="@+id/text_status_log"
+            lighit:layout_width="match_parent"
+            lighit:layout_height="wrap_content"
+            lighit:text="Status: Aguardando interação..."
+            lighit:textColor="#333333"
+            lighit:textSize="14sp"
+            lighit:minLines="10"
+        />
+    </ScrollView>
+
+</LinearLayout>
