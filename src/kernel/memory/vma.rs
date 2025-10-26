@@ -1,7 +1,7 @@
 // src/kernel/memory/vma.rs
 
 /*
- * Copyright 2024 Chagas Inc.
+ * Copyright 2025 Chagas Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
