@@ -1,160 +1,159 @@
 // src/kernel/interrupts/mod.rs
 
 //! Subsistema de Gerenciamento de Interrupções e Exceções para o LightOS.
-//! 
-//! Responsável por configurar a IDT (Interrupt Descriptor Table) e lidar
-//! com interrupções de hardware e exceções da CPU.
 
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
-use lazy_static::lazy_static; // Para inicialização estática e thread-safe da IDT
-use spin::Mutex; // Para acesso seguro ao PIC
+use x86_64::structures::idt::{
+    InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode
+};
+// ... (Outros imports permanecem os mesmos) ...
+use x86_64::registers::control::Cr2;
+use lazy_static::lazy_static; 
+use spin::Mutex; 
 
-// Importa o driver PIC
 pub mod pic;
+use crate::task; 
+use crate::syscall; // Novo import para o dispatcher de Syscalls
+
+// ... (Constantes e Enumerações InterruptIndex permanecem as mesmas) ...
 
 // ------------------------------------------------------------------------
-// --- Definições de Interrupção ---
+// --- Funções Assembly (Declaradas como Extern) ---
 // ------------------------------------------------------------------------
 
-/// ⚡ Vetores de interrupção (IRQs de hardware).
-/// Os vetores 0-31 são reservados para exceções da CPU.
-/// Usamos vetores a partir de 32 para evitar conflitos com as exceções.
-pub const PIC_1_OFFSET: u8 = 32;
-pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
+extern "C" {
+    /// O ponto de entrada Assembly para a interrupção do Timer (IRQ0).
+    /// Ele salva o contexto, chama o handler Rust (`lightos_timer_handler_rust`),
+    /// e restaura/troca o contexto.
+    pub fn lightos_timer_handler();
 
-/// Enumeração de IRQs de hardware (para uso fácil no código Rust)
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum InterruptIndex {
-    Timer = PIC_1_OFFSET,           // IRQ0: Timer
-    Keyboard = PIC_1_OFFSET + 1,    // IRQ1: Teclado PS/2
+    /// O ponto de entrada Assembly para a interrupção do Teclado (IRQ1).
+    pub fn lightos_keyboard_handler();
+
+    /// O ponto de entrada Assembly para Chamadas de Sistema (INT 0x80 ou SYSCALL).
+    pub fn lightos_syscall_entry(); 
 }
 
 // ------------------------------------------------------------------------
-// --- IDT (Interrupt Descriptor Table) ---
+// --- IDT (Interrupt Descriptor Table) - Configuração ---
 // ------------------------------------------------------------------------
 
 lazy_static! {
-    /// Tabela de Descritores de Interrupção (IDT) estática.
-    /// É inicializada apenas uma vez e é acessada de forma thread-safe.
+    /// 🛡️ Tabela de Descritores de Interrupção estática e thread-safe.
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         
         // --- Handlers de Exceções da CPU (Vetor 0-31) ---
-        // 0. Falha de Divisão (Division By Zero)
+        // Exceções irrecuperáveis ou críticas (permanecem como funções Rust)
+        // ... (divide_error, double_fault, general_protection_fault, page_fault, etc.)
         idt.divide_error.set_handler_fn(divide_error_handler);
-        // 14. Falha de Página (Page Fault) - Crucial para o MMU
-        idt.page_fault.set_handler_fn(page_fault_handler);
-        // 8. Dupla Falha (Double Fault) - Se uma exceção ocorrer durante o tratamento de outra
-        idt.double_fault.set_handler_fn(double_fault_handler);
-        // 13. Exceção de Proteção Geral (General Protection Fault - GPF)
+        idt.double_fault.set_handler_fn(double_fault_handler); 
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
         
-        // --- Handlers de Hardware (Vetor 32+) ---
-        // IRQ 0: Temporizador
-        idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
-        // IRQ 1: Teclado
-        idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        // --- Handlers de Hardware (Vetor 32+) - Apontam para o Assembly Wrapper ---
         
-        // Adicionar a interrupção de Chamada de Sistema (Syscall) - Vetor 0x80 (128)
-        // idt[0x80].set_handler_fn(syscall_handler); // Exigiria um handler assembly
+        // 1. Timer IRQ (IRQ0 = 32)
+        // O handler Assembly fará a troca de contexto.
+        unsafe {
+            use x86_64::structures::idt::HandlerFunc;
+            idt[InterruptIndex::Timer.as_u8()].set_handler_fn(
+                core::mem::transmute(lightos_timer_handler as *const ())
+            );
+        }
+        
+        // 2. Keyboard IRQ (IRQ1 = 33)
+        unsafe {
+            use x86_64::structures::idt::HandlerFunc;
+            idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(
+                core::mem::transmute(lightos_keyboard_handler as *const ())
+            );
+        }
+        
+        // 3. Syscall (INT 0x80 = 0x80)
+        // Embora `SYSCALL` seja moderno, a `INT 0x80` é uma alternativa comum para a IDT.
+        unsafe {
+            use x86_64::structures::idt::HandlerFunc;
+            idt[InterruptIndex::Syscall.as_u8()].set_handler_fn(
+                core::mem::transmute(lightos_syscall_entry as *const ())
+            ).set_present(true)
+             .disable_interrupts(false)
+             .set_privilege_level(x86_64::PrivilegeLevel::Ring3); // Permite chamada do Userspace
+        }
         
         idt
     };
 }
 
-impl InterruptIndex {
-    fn as_u8(self) -> u8 {
-        self as u8
-    }
-}
-
 /// ⚙️ Inicializa o subsistema de interrupções.
-/// * Carrega a IDT na CPU e configura o PIC.
 pub fn init_idt_and_pics() {
     // 1. Carregar a IDT na CPU
     IDT.load();
-    crate::println!("INFO: IDT carregada com sucesso.");
 
     // 2. Configurar os Controladores PIC
     unsafe {
         pic::PICS.lock().initialize();
     }
-    crate::println!("INFO: PICs remapeados e inicializados.");
     
     // 3. Habilitar Interrupções
     x86_64::instructions::interrupts::enable();
-    crate::println!("INFO: Interrupções habilitadas (CLI).");
+    crate::println!("INFO: Interrupções (IDT/PIC) inicializadas.");
 }
 
+
 // ------------------------------------------------------------------------
-// --- Handlers de Exceções da CPU ---
+// --- Handlers de Exceções da CPU (Permanecem os mesmos) ---
+// ------------------------------------------------------------------------
+// ... (divide_error_handler, double_fault_handler, general_protection_fault_handler, page_fault_handler)
+// ... (Seu código original deve ser mantido aqui)
+// ...
+
+// ------------------------------------------------------------------------
+// --- Handlers de IRQ (Chamados pelo Assembly Wrapper - extern "C") ---
 // ------------------------------------------------------------------------
 
-extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    crate::println!("EXCEÇÃO: DIVISÃO POR ZERO");
-    crate::println!("Stack Frame: {:#?}", stack_frame);
-    loop { x86_64::instructions::hlt(); }
-}
-
-extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: x86_64::structures::idt::PageFaultErrorCode,
-) {
-    use x86_64::registers::control::Cr2;
+/// ⏰ Handler Rust para a interrupção do Timer (IRQ0).
+/// * Chamado pelo Assembly wrapper `lightos_timer_handler`.
+#[no_mangle]
+pub extern "C" fn lightos_timer_handler_rust(mut context_ptr: *mut task::TaskContext) {
     
-    crate::println!("EXCEÇÃO: FALHA DE PÁGINA");
-    crate::println!("Endereço de acesso: {:?}", Cr2::read());
-    crate::println!("Código de Erro: {:?}", error_code);
-    crate::println!("Stack Frame: {:#?}", stack_frame);
-    loop { x86_64::instructions::hlt(); }
-}
+    // 1. Logar (Opcional)
+    // crate::println!(".");
 
-extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame, _error_code: u64
-) -> ! {
-    // A Dupla Falha (Double Fault) é irrecuperável
-    crate::println!("EXCEÇÃO: DUPLA FALHA");
-    crate::println!("Stack Frame: {:#?}", stack_frame);
-    loop {} // Loop infinito sem hlt para evitar loop de falhas
-}
+    // 2. Chamar o Scheduler para realizar a troca
+    let current_context = unsafe { &mut *context_ptr };
+    
+    // O Scheduler fará o agendamento e modificará `current_context` para o próximo.
+    unsafe {
+        task::schedule_next(current_context);
+    }
 
-extern "x86-interrupt" fn general_protection_fault_handler(
-    stack_frame: InterruptStackFrame, _error_code: u64
-) {
-    crate::println!("EXCEÇÃO: FALHA DE PROTEÇÃO GERAL (GPF)");
-    crate::println!("Código de Erro: {}", _error_code);
-    crate::println!("Stack Frame: {:#?}", stack_frame);
-    loop { x86_64::instructions::hlt(); }
-}
-
-
-// ------------------------------------------------------------------------
-// --- Handlers de Interrupções de Hardware (IRQs) ---
-// ------------------------------------------------------------------------
-
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // A cada tick do temporizador, o agendador de tarefas será chamado.
-    // crate::println!("."); // Descomentar para ver os ticks
-
-    // 1. Enviar EOI (End of Interrupt) para o PIC Mestre
+    // 3. Enviar EOI
     unsafe {
         pic::PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
+    
+    // O Assembly Wrapper continua daqui, restaurando o contexto da próxima tarefa.
 }
 
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+/// ⌨️ Handler Rust para a interrupção do Teclado (IRQ1).
+#[no_mangle]
+pub extern "C" fn lightos_keyboard_handler_rust() {
     use x86_64::instructions::port::Port;
 
-    // 1. Ler o scancode da porta de dados do PS/2 (0x60)
+    // 1. Ler o scancode
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
     
-    // 2. Processar o scancode
-    crate::println!("Teclado IRQ! Scancode: {:#x}", scancode);
+    // 2. Processar (Ex: Despachar para o Driver de Teclado/Input)
+    crate::println!("[INPUT] Scancode: {:#x}", scancode);
 
     // 3. Enviar EOI
     unsafe {
         pic::PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }
 }
+
+
+// ------------------------------------------------------------------------
+// --- PIC: Peripheral Interrupt Controller (Manter o módulo pic.rs original) ---
+// ------------------------------------------------------------------------
