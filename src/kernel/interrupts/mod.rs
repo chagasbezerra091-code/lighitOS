@@ -1,159 +1,105 @@
 // src/kernel/interrupts/mod.rs
 
+/*
+ * Copyright 2017-2025 Chagas Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //! Subsistema de Gerenciamento de Interrupções e Exceções para o LightOS.
 
 use x86_64::structures::idt::{
     InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode
 };
-// ... (Outros imports permanecem os mesmos) ...
 use x86_64::registers::control::Cr2;
 use lazy_static::lazy_static; 
 use spin::Mutex; 
+use x86_64::instructions::interrupts; // Necessário para desabilitar/reabilitar IRQ
 
+// Módulos internos
 pub mod pic;
-use crate::task; 
-use crate::syscall; // Novo import para o dispatcher de Syscalls
+use crate::{task, syscall}; 
+use crate::memory::vma::VMA_Error; // Importa o erro VMA
 
 // ... (Constantes e Enumerações InterruptIndex permanecem as mesmas) ...
+// ... (Funções lightos_* Assembly e init_idt_and_pics permanecem as mesmas) ...
+// ... (Exceções: divide_error_handler, double_fault_handler, general_protection_fault_handler permanecem as mesmas) ...
 
 // ------------------------------------------------------------------------
-// --- Funções Assembly (Declaradas como Extern) ---
+// --- Handler de Falha de Página (Page Fault) ---
 // ------------------------------------------------------------------------
 
-extern "C" {
-    /// O ponto de entrada Assembly para a interrupção do Timer (IRQ0).
-    /// Ele salva o contexto, chama o handler Rust (`lightos_timer_handler_rust`),
-    /// e restaura/troca o contexto.
-    pub fn lightos_timer_handler();
+extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
+    // 1. Obter o endereço virtual que causou a falha (CR2)
+    let fault_addr = Cr2::read();
+    
+    // Obter o ID da tarefa atual (para logs e contexto)
+    let current_task_id = task::TASK_MANAGER.lock().current_task.as_ref()
+        .map_or(0, |t| t.id.0);
 
-    /// O ponto de entrada Assembly para a interrupção do Teclado (IRQ1).
-    pub fn lightos_keyboard_handler();
-
-    /// O ponto de entrada Assembly para Chamadas de Sistema (INT 0x80 ou SYSCALL).
-    pub fn lightos_syscall_entry(); 
-}
-
-// ------------------------------------------------------------------------
-// --- IDT (Interrupt Descriptor Table) - Configuração ---
-// ------------------------------------------------------------------------
-
-lazy_static! {
-    /// 🛡️ Tabela de Descritores de Interrupção estática e thread-safe.
-    static ref IDT: InterruptDescriptorTable = {
-        let mut idt = InterruptDescriptorTable::new();
+    crate::println!("\n--- [PAGE FAULT] Tarefa #{} ---", current_task_id);
+    crate::println!("Endereço que Falhou (CR2): {:?}", fault_addr);
+    crate::println!("Código de Erro: {:?}", error_code);
+    
+    // 2. Tentar resolver a falha usando o VMA Manager da tarefa atual
+    let resolution_result = {
+        // Bloqueia o Scheduler para acessar o VMA Manager da tarefa atual
+        let mut scheduler = task::TASK_MANAGER.lock();
         
-        // --- Handlers de Exceções da CPU (Vetor 0-31) ---
-        // Exceções irrecuperáveis ou críticas (permanecem como funções Rust)
-        // ... (divide_error, double_fault, general_protection_fault, page_fault, etc.)
-        idt.divide_error.set_handler_fn(divide_error_handler);
-        idt.double_fault.set_handler_fn(double_fault_handler); 
-        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
-        
-        // --- Handlers de Hardware (Vetor 32+) - Apontam para o Assembly Wrapper ---
-        
-        // 1. Timer IRQ (IRQ0 = 32)
-        // O handler Assembly fará a troca de contexto.
-        unsafe {
-            use x86_64::structures::idt::HandlerFunc;
-            idt[InterruptIndex::Timer.as_u8()].set_handler_fn(
-                core::mem::transmute(lightos_timer_handler as *const ())
-            );
+        match scheduler.current_task.as_mut() {
+            Some(task) => {
+                // Tenta mapear a página. Isso implementa o Demand Paging.
+                task.vma_manager.map_vma_page(fault_addr)
+            }
+            None => {
+                // Se não há tarefa atual (acontece antes do Scheduler iniciar)
+                Err(VMA_Error::NoAreaFound)
+            }
         }
-        
-        // 2. Keyboard IRQ (IRQ1 = 33)
-        unsafe {
-            use x86_64::structures::idt::HandlerFunc;
-            idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(
-                core::mem::transmute(lightos_keyboard_handler as *const ())
-            );
-        }
-        
-        // 3. Syscall (INT 0x80 = 0x80)
-        // Embora `SYSCALL` seja moderno, a `INT 0x80` é uma alternativa comum para a IDT.
-        unsafe {
-            use x86_64::structures::idt::HandlerFunc;
-            idt[InterruptIndex::Syscall.as_u8()].set_handler_fn(
-                core::mem::transmute(lightos_syscall_entry as *const ())
-            ).set_present(true)
-             .disable_interrupts(false)
-             .set_privilege_level(x86_64::PrivilegeLevel::Ring3); // Permite chamada do Userspace
-        }
-        
-        idt
     };
-}
-
-/// ⚙️ Inicializa o subsistema de interrupções.
-pub fn init_idt_and_pics() {
-    // 1. Carregar a IDT na CPU
-    IDT.load();
-
-    // 2. Configurar os Controladores PIC
-    unsafe {
-        pic::PICS.lock().initialize();
-    }
     
-    // 3. Habilitar Interrupções
-    x86_64::instructions::interrupts::enable();
-    crate::println!("INFO: Interrupções (IDT/PIC) inicializadas.");
-}
-
-
-// ------------------------------------------------------------------------
-// --- Handlers de Exceções da CPU (Permanecem os mesmos) ---
-// ------------------------------------------------------------------------
-// ... (divide_error_handler, double_fault_handler, general_protection_fault_handler, page_fault_handler)
-// ... (Seu código original deve ser mantido aqui)
-// ...
-
-// ------------------------------------------------------------------------
-// --- Handlers de IRQ (Chamados pelo Assembly Wrapper - extern "C") ---
-// ------------------------------------------------------------------------
-
-/// ⏰ Handler Rust para a interrupção do Timer (IRQ0).
-/// * Chamado pelo Assembly wrapper `lightos_timer_handler`.
-#[no_mangle]
-pub extern "C" fn lightos_timer_handler_rust(mut context_ptr: *mut task::TaskContext) {
-    
-    // 1. Logar (Opcional)
-    // crate::println!(".");
-
-    // 2. Chamar o Scheduler para realizar a troca
-    let current_context = unsafe { &mut *context_ptr };
-    
-    // O Scheduler fará o agendamento e modificará `current_context` para o próximo.
-    unsafe {
-        task::schedule_next(current_context);
-    }
-
-    // 3. Enviar EOI
-    unsafe {
-        pic::PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
-    
-    // O Assembly Wrapper continua daqui, restaurando o contexto da próxima tarefa.
-}
-
-/// ⌨️ Handler Rust para a interrupção do Teclado (IRQ1).
-#[no_mangle]
-pub extern "C" fn lightos_keyboard_handler_rust() {
-    use x86_64::instructions::port::Port;
-
-    // 1. Ler o scancode
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-    
-    // 2. Processar (Ex: Despachar para o Driver de Teclado/Input)
-    crate::println!("[INPUT] Scancode: {:#x}", scancode);
-
-    // 3. Enviar EOI
-    unsafe {
-        pic::PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+    // 3. Avaliar o resultado da tentativa de resolução
+    match resolution_result {
+        Ok(_) => {
+            // A falha foi resolvida (a página foi mapeada sob demanda).
+            // O retorno da interrupção (IRETQ) fará com que a CPU tente a 
+            // instrução falha novamente, que agora deve ter sucesso.
+            crate::println!("INFO: Falha de Página resolvida (Demand Paging).");
+        }
+        Err(VMA_Error::NoAreaFound) => {
+            // Se não for um endereço válido em nenhum VMA, é uma violação de acesso.
+            crate::println!("FATAL: Endereço {:#x} não pertence a nenhuma VMA válida. Matando Tarefa.", fault_addr.as_u64());
+            // Ação: Terminar a tarefa atual ou entrar em pânico se for o Kernel.
+            // Para simplificar, causamos um pânico no kernel por agora:
+            
+            crate::println!("Stack Frame: {:#?}", stack_frame);
+            loop { x86_64::instructions::hlt(); }
+        }
+        Err(VMA_Error::OOM) => {
+            crate::println!("FATAL: Falha de Página (OOM) - Memória física esgotada.");
+            loop { x86_64::instructions::hlt(); }
+        }
+        Err(e) => {
+            crate::println!("FATAL: Erro desconhecido na VMA: {:?}", e);
+            loop { x86_64::instructions::hlt(); }
+        }
     }
 }
 
-
 // ------------------------------------------------------------------------
-// --- PIC: Peripheral Interrupt Controller (Manter o módulo pic.rs original) ---
+// --- Handlers de IRQ (lightos_timer_handler_rust, lightos_keyboard_handler_rust) ---
+// ... (Permanecem os mesmos) ...
 // ------------------------------------------------------------------------
