@@ -1,0 +1,65 @@
+// src/arch/x86_64/x86_64_arch.hal
+
+//! Configurações da Hardware Abstraction Layer (HAL) para x86_64.
+//! 
+//! Contém constantes de endereçamento de memória e I/O específicas para esta arquitetura.
+
+#![allow(dead_code)]
+
+// ------------------------------------------------------------------------
+// --- ⚙️ Configuração Geral da Arquitetura ---
+// ------------------------------------------------------------------------
+
+/// String de identificação da arquitetura.
+pub const ARCH_NAME: &str = "x86_64";
+
+// ------------------------------------------------------------------------
+// --- 💾 Configuração da Memória (Endereços Físicos e Virtuais) ---
+// ------------------------------------------------------------------------
+
+/// Endereço base do Mapeamento de Memória Alto (Higher Half Kernel).
+/// Onde o Kernel é mapeado no espaço de endereçamento virtual.
+pub const KERNEL_HH_BASE: usize = 0xFFFF_8000_0000_0000;
+
+/// Endereço de memória física de inicialização do Kernel.
+pub const KERNEL_PHYS_START: usize = 0x100000; // 1 MB
+
+/// Endereço inicial do heap virtual do Kernel.
+pub const KERNEL_HEAP_START: usize = KERNEL_HH_BASE + 0x0100_0000; // Exemplo
+
+// ------------------------------------------------------------------------
+// --- 🖥️ Dispositivos de Vídeo e Console ---
+// ------------------------------------------------------------------------
+
+/// Endereço de MMIO para o buffer de texto VGA (modo texto).
+pub const VGA_TEXT_BUFFER_ADDR: usize = 0xb8000;
+/// Largura da tela em caracteres (modo texto VGA).
+pub const VGA_WIDTH: usize = 80;
+/// Altura da tela em caracteres (modo texto VGA).
+pub const VGA_HEIGHT: usize = 25;
+
+// ------------------------------------------------------------------------
+// --- 🔗 Portas de I/O de Dispositivos Legados (Port I/O) ---
+// ------------------------------------------------------------------------
+
+/// Porta de I/O para o Master Programmable Interrupt Controller (PIC) - Comando.
+pub const PIC_MASTER_COMMAND_PORT: u16 = 0x20;
+/// Porta de I/O para o Master PIC - Dados (IMR).
+pub const PIC_MASTER_DATA_PORT: u16 = 0x21;
+
+/// Porta de I/O para o Slave PIC - Comando.
+pub const PIC_SLAVE_COMMAND_PORT: u16 = 0xA0;
+/// Porta de I/O para o Slave PIC - Dados (IMR).
+pub const PIC_SLAVE_DATA_PORT: u16 = 0xA1;
+
+/// Porta de I/O para o Controlador de Dados PS/2.
+pub const PS2_DATA_PORT: u16 = 0x60;
+/// Porta de I/O para o Controlador de Status/Comando PS/2.
+pub const PS2_COMMAND_PORT: u16 = 0x64;
+
+// ------------------------------------------------------------------------
+// --- ⏱️ Temporizador (Exemplo: MMIO para HPET/APIC) ---
+// ------------------------------------------------------------------------
+
+/// Endereço de MMIO para o APIC Local (se estiver usando).
+pub const LOCAL_APIC_BASE: usize = 0xFEE0_0000;
