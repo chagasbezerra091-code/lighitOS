@@ -1,0 +1,49 @@
+// src/arch/arm64/arm64_arch.hal
+
+//! Configurações da Hardware Abstraction Layer (HAL) para ARM64.
+//! 
+//! Contém constantes de MMIO e definições específicas para o ecossistema ARMv8/AArch64.
+
+#![allow(dead_code)]
+
+// ------------------------------------------------------------------------
+// --- ⚙️ Configuração Geral da Arquitetura ---
+// ------------------------------------------------------------------------
+
+/// String de identificação da arquitetura.
+pub const ARCH_NAME: &str = "arm64";
+
+// ------------------------------------------------------------------------
+// --- 💾 Configuração da Memória (Padrões ARM64) ---
+// ------------------------------------------------------------------------
+
+/// Tamanho da página padrão (4 KB) em bytes.
+pub const PAGE_SIZE: usize = 4096;
+
+/// Endereço inicial da alocação de memória física DRAM.
+pub const DRAM_PHYS_START: usize = 0x40000000; // Exemplo comum
+
+/// Offset de Mapeamento Alto (Higher-half) para o Kernel ARM64.
+/// Onde a memória física é mapeada para o espaço virtual do kernel.
+pub const KERNEL_MMIO_OFFSET: usize = 0xFFFFFFFF_C0000000;
+
+// ------------------------------------------------------------------------
+// --- 🔗 Periféricos de MMIO (Memory Mapped I/O) ---
+// ------------------------------------------------------------------------
+
+/// Endereço de MMIO para o UART (porta serial) principal.
+/// (Exemplo: Baseado em Raspberry Pi 3/4 ou QEMU VersatilePB/virt)
+pub const UART_MMIO_BASE: usize = 0x3F201000; // Exemplo de um endereço Fictício/BCM
+
+/// Endereço de MMIO para o Controlador de Interrupção Genérico (GIC) - Distribuidor.
+pub const GIC_DISTRIBUTOR_BASE: usize = 0xFF840000; // Exemplo
+
+/// Endereço de MMIO para o GIC - Redistribuidor.
+pub const GIC_REDISTRIBUTOR_BASE: usize = 0xFF850000; // Exemplo
+
+// ------------------------------------------------------------------------
+// --- ⏱️ Temporizador ---
+// ------------------------------------------------------------------------
+
+/// Endereço de MMIO para o System Timer (se usado).
+pub const SYS_TIMER_BASE: usize = 0x3F003000; // Exemplo
