@@ -1,0 +1,87 @@
+# .github/workflows/ci.yml
+name: LightOS Kernel CI
+
+on:
+  # Executa o workflow em todo push para a branch 'main'
+  push:
+    branches: [ "main" ]
+  # Executa o workflow em todo Pull Request aberto para 'main'
+  pull_request:
+    branches: [ "main" ]
+  # Permite a execução manual na aba 'Actions'
+  workflow_dispatch:
+
+jobs:
+  build_kernel:
+    name: Build (C & Rust)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: ⬇️ Checkout do Código
+        uses: actions/checkout@v4
+
+      # --- Configuração do Ambiente C ---
+      - name: ⚙️ Instalar Compiladores C/C++ (GCC/Clang) e Utilitários
+        run: |
+          sudo apt-get update
+          # build-essential inclui gcc, g++, make e libc-dev
+          sudo apt-get install -y build-essential nasm xorriso mtools
+          # nasm (Assembly), xorriso (para criar ISO) são comuns em desenvolvimento de kernel.
+
+      # --- Configuração do Ambiente Rust ---
+      - name: 🦀 Instalar Toolchain Rust (Nightly para no_std/kernel)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Kernels geralmente precisam da toolchain nightly para usar recursos instáveis
+          # como a customização do pânico e a build-std.
+          toolchain: nightly
+          # Adiciona o alvo de cross-compilation para arquitetura bare-metal x86_64
+          target: x86_64-unknown-none
+
+      - name: 🔧 Configurar Cache do Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      # --- Etapa de Compilação Híbrida ---
+      
+      - name: 🔨 Build do Código C (Bootloader/Core)
+        # Assumindo que seu código C está em um subdiretório e usa um Makefile simples
+        # Você deve adaptar o caminho e o comando para o seu projeto C.
+        run: |
+          # Exemplo de comando de make para a parte C
+          make -C c_core/ all
+        # O 'make' do C deve ser configurado para gerar um objeto (ex: c_core/boot.o)
+        # que o build do Rust irá linkar.
+
+      - name: 🚀 Build do Módulo/Kernel Rust (x86_64-unknown-none)
+        # O comando cargo build deve usar o alvo bare-metal e incluir features necessárias
+        run: |
+          # Adapte o caminho e o nome da pasta do seu código Rust se necessário
+          cargo build --target x86_64-unknown-none
+        working-directory: rust_kernel/
+
+      # --- Etapa de Teste (Exemplo de Lint/Estilo) ---
+
+      - name: 💅 Executar Lint (Clippy)
+        run: cargo clippy --target x86_64-unknown-none -- -D warnings
+        working-directory: rust_kernel/
+
+      # Nota: Testes unitários padrão (cargo test) não funcionam diretamente em targets no_std
+      # sem um framework de teste bare-metal.
+      
+      # --- Etapa de Empacotamento/Artefato ---
+      
+      - name: 📦 Upload do Binário do Kernel (Artefato)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightos-kernel
+          # Assumindo que o binário final é gerado nesta localização
+          path: rust_kernel/target/x86_64-unknown-none/debug/lightos-kernel
+
